@@ -9,6 +9,7 @@ import platform
 import logging
 import atexit
 import subprocess
+from .subprocess_utils import SUBPROCESS_FLAGS
 import concurrent.futures
 
 class ProcessManager:
@@ -118,7 +119,8 @@ class ProcessManager:
             # 使用系统命令强制终止进程
             if platform.system() == 'Windows':
                 subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], 
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3)
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=3,
+                    creationflags=SUBPROCESS_FLAGS)
             else:
                 subprocess.run(['pkill', '-9', '-P', str(pid)], 
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2)

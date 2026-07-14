@@ -84,7 +84,14 @@ class SubtitleDetect:
     def find_subtitle_frame_no(self, sub_remover=None):
         video_cap = cv2.VideoCapture(get_readable_path(self.video_path))
         frame_count = video_cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        tbar = tqdm(total=int(frame_count), unit='frame', position=0, file=sys.__stdout__, desc='Subtitle Finding')
+        # Use a safe output stream for tqdm to avoid breaking when running under pythonw.exe
+        try:
+            sys.__stdout__.write('')
+            tqdm_file = sys.__stdout__
+        except Exception:
+            import os
+            tqdm_file = open(os.devnull, 'w')
+        tbar = tqdm(total=int(frame_count), unit='frame', position=0, file=tqdm_file, desc='Subtitle Finding')
         current_frame_no = 0
         # 阶段1：采样检测，仅对每隔 sample_step 帧执行 OCR
         sampled_results = {}  # frame_no -> temp_list

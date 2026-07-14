@@ -3,6 +3,7 @@ import torch
 import shutil
 import traceback
 import subprocess
+from backend.tools.subprocess_utils import SUBPROCESS_FLAGS
 import os
 from pathlib import Path
 import threading
@@ -25,6 +26,7 @@ from backend.tools.model_config import ModelConfig
 from backend.tools.ffmpeg_cli import FFmpegCLI
 from backend.tools.subtitle_detect import SubtitleDetect
 from backend.tools.video_io import FramePrefetcher, FFmpegVideoWriter
+from backend.tools.diag_log import log as diag_log, log_exception as diag_log_exc
 import tempfile
 import multiprocessing
 import time
@@ -61,11 +63,23 @@ class SubtitleRemover:
         self.frame_width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         # 创建视频临时对象，windows下delete=True会有permission denied的报错
         self.video_temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+        # 立即关闭文件句柄, 避免 Windows 独占锁导致 ffmpeg/cv2 无法写入目标路径
+        try:
+            self.video_temp_file.close()
+        except Exception:
+            pass
         # 创建视频写对象（使用 FFmpeg libx264 编码，比 mp4v 质量更好、文件更小）
         try:
             self.video_writer = FFmpegVideoWriter(get_readable_path(self.video_temp_file.name), self.fps, self.size)
         except Exception:
+            traceback.print_exc()
+            diag_log_exc("[SubtitleRemover] FFmpegVideoWriter init failed, falling back to cv2.VideoWriter")
             self.video_writer = cv2.VideoWriter(get_readable_path(self.video_temp_file.name), cv2.VideoWriter_fourcc(*'mp4v'), self.fps, self.size)
+        diag_log(
+            f"[SubtitleRemover] init: video_path={self.video_path} size={self.size} "
+            f"fps={self.fps} frame_count={self.frame_count} "
+            f"temp_out={self.video_temp_file.name}"
+        )
         self.video_out_path = os.path.abspath(os.path.join(os.path.dirname(self.video_path), f'{self.vd_name}_no_sub.mp4'))
         self.propainter_inpaint = None
         self.ext = os.path.splitext(vd_path)[-1]
@@ -348,7 +362,14 @@ class SubtitleRemover:
         os.makedirs(os.path.dirname(self.video_out_path), exist_ok=True)
         # 重置进度条
         self.progress_total = 0
-        tbar = tqdm(total=int(self.frame_count), unit='frame', position=0, file=sys.__stdout__,
+        # Use a safe output stream for tqdm to avoid breaking when running under pythonw.exe
+        try:
+            sys.__stdout__.write('')
+            tqdm_file = sys.__stdout__
+        except Exception:
+            tqdm_file = open(os.devnull, 'w')
+            
+        tbar = tqdm(total=int(self.frame_count), unit='frame', position=0, file=tqdm_file,
                     desc='Subtitle Removing')
         if self.is_picture:
             original_frame = read_image(self.video_path)
@@ -387,6 +408,11 @@ class SubtitleRemover:
 
         self.video_cap.release()
         self.video_writer.release()
+        try:
+            tmp_size = os.path.getsize(self.video_temp_file.name) if os.path.exists(self.video_temp_file.name) else 0
+        except Exception:
+            tmp_size = -1
+        diag_log(f"[SubtitleRemover] post-writer: temp_file_size={tmp_size} path={self.video_temp_file.name}")
         if not self.is_picture:
             # 将原音频合并到新生成的视频文件中
             self.merge_audio_to_video()
@@ -418,15 +444,21 @@ class SubtitleRemover:
     def merge_audio_to_video(self):
         # 创建音频临时对象，windows下delete=True会有permission denied的报错
         temp = tempfile.NamedTemporaryFile(suffix='.aac', delete=False)
+        # 立即关闭句柄避免 Windows 独占锁阻止 ffmpeg 写入
+        try:
+            temp.close()
+        except Exception:
+            pass
         audio_extract_command = [FFmpegCLI.instance().ffmpeg_path,
                                  "-y", "-i", self.video_path,
                                  "-acodec", "copy",
                                  "-vn", "-loglevel", "error", temp.name]
-        use_shell = True if os.name == "nt" else False
         try:
-            subprocess.check_output(audio_extract_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
+            subprocess.check_output(audio_extract_command, stdin=open(os.devnull), timeout=600,
+                                    creationflags=SUBPROCESS_FLAGS)
         except Exception as e:
             traceback.print_exc()
+            diag_log_exc(f"[merge_audio_to_video] extract audio failed: {e}")
             self.append_output(tr['Main']['FailToExtractAudio'].format(str(e)))
             return
         else:
@@ -438,9 +470,11 @@ class SubtitleRemover:
                                        "-acodec", "copy",
                                        "-loglevel", "error", self.video_out_path]
                 try:
-                    subprocess.check_output(audio_merge_command, stdin=open(os.devnull), shell=use_shell, timeout=600)
+                    subprocess.check_output(audio_merge_command, stdin=open(os.devnull), timeout=600,
+                                            creationflags=SUBPROCESS_FLAGS)
                 except Exception as e:
                     traceback.print_exc()
+                    diag_log_exc(f"[merge_audio_to_video] merge failed: {e}")
                     self.append_output(tr['Main']['FailToMergeAudio'].format(str(e)))
                     return
             if os.path.exists(temp.name):

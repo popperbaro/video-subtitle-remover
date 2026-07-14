@@ -18,6 +18,8 @@ from backend.inpaint.utils.sttn_utils import Stack, ToTorchFormatTensor
 from backend.tools.inpaint_tools import get_inpaint_area_by_mask, is_frame_number_in_ab_sections
 from backend.tools.video_io import FramePrefetcher
 from backend.tools.hardware_accelerator import HardwareAccelerator
+from backend.tools.common_tools import get_readable_path
+from backend.tools.diag_log import log as diag_log, log_exception as diag_log_exc
 
 # 定义图像预处理方式
 _to_tensors = transforms.Compose([
@@ -168,7 +170,9 @@ class STTNAutoInpaint:
 
     def read_frame_info_from_video(self):
         # 使用opencv读取视频
-        reader = cv2.VideoCapture(self.video_path)
+        reader = cv2.VideoCapture(get_readable_path(self.video_path))
+        if not reader.isOpened():
+            raise RuntimeError(f"[STTNAutoInpaint] cv2.VideoCapture failed to open: {self.video_path}")
         # 获取视频的宽度, 高度, 帧率和帧数信息并存储在frame_info字典中
         frame_info = {
             'W_ori': int(reader.get(cv2.CAP_PROP_FRAME_WIDTH) + 0.5),  # 视频的原始宽度
@@ -176,6 +180,12 @@ class STTNAutoInpaint:
             'fps': reader.get(cv2.CAP_PROP_FPS),  # 视频的帧率
             'len': int(reader.get(cv2.CAP_PROP_FRAME_COUNT) + 0.5)  # 视频的总帧数
         }
+        print(f"[STTNAutoInpaint] video info: {frame_info}")
+        diag_log(f"[STTNAutoInpaint] video_path={self.video_path} info={frame_info}")
+        if frame_info['len'] <= 0 or frame_info['W_ori'] <= 0 or frame_info['H_ori'] <= 0:
+            raise RuntimeError(
+                f"[STTNAutoInpaint] invalid video info {frame_info} for {self.video_path}"
+            )
         # 返回视频读取对象、帧信息和视频写入对象
         return reader, frame_info
 
@@ -225,6 +235,8 @@ class STTNAutoInpaint:
 
             # 得到修复区域位置
             inpaint_area = get_inpaint_area_by_mask(frame_info['W_ori'], frame_info['H_ori'], split_h, mask)
+            print(f"[STTNAutoInpaint] inpaint_area={inpaint_area}")
+            diag_log(f"[STTNAutoInpaint] split_h={split_h} inpaint_area={inpaint_area} mask_nonzero={int((mask>0).sum())}")
             # 根据可用显存动态调整 clip_gap，避免 OOM
             effective_clip_gap = self.clip_gap
             vram_mb = HardwareAccelerator.instance().get_available_vram_mb()
@@ -235,14 +247,24 @@ class STTNAutoInpaint:
                 max_frames_by_vram = max(max_frames_by_vram, 10)  # 至少10帧
                 effective_clip_gap = min(self.clip_gap, max_frames_by_vram)
                 if effective_clip_gap < self.clip_gap:
-                    tqdm.write(f'GPU VRAM: {vram_mb:.0f}MB, adjusting clip_gap: {self.clip_gap} -> {effective_clip_gap}')
+                    msg = f'GPU VRAM: {vram_mb:.0f}MB, adjusting clip_gap: {self.clip_gap} -> {effective_clip_gap}'
+                    try:
+                        print(msg)
+                    except Exception:
+                        pass
+                    diag_log(f"[STTNAutoInpaint] {msg}")
             # 计算需要迭代修复视频的次数
             rec_time = frame_info['len'] // effective_clip_gap if frame_info['len'] % effective_clip_gap == 0 else frame_info['len'] // effective_clip_gap + 1
             # 遍历每一次的迭代次数
             for i in range(rec_time):
                 start_f = i * effective_clip_gap  # 起始帧位置
                 end_f = min((i + 1) * effective_clip_gap, frame_info['len'])  # 结束帧位置
-                tqdm.write(f'Processing: {start_f + 1} - {end_f} / Total: {frame_info['len']}')
+                msg = f"Processing: {start_f + 1} - {end_f} / Total: {frame_info['len']}"
+                try:
+                    print(msg)
+                except Exception:
+                    pass
+                diag_log(f"[STTNAutoInpaint] {msg}")
                 
                 frames_hr = []  # 高分辨率帧列表
                 frames = {}  # 帧字典，用于存储裁剪后的图像
@@ -282,6 +304,15 @@ class STTNAutoInpaint:
                     else:
                         comps[k] = []
                 
+                # 如果没有检测到修复区域, 直接回写原始帧, 避免输出空视频
+                if not inpaint_area and valid_frames_count > 0:
+                    for j in range(valid_frames_count):
+                        writer.write(frames_hr[j])
+                        if input_sub_remover is not None:
+                            if tbar is not None:
+                                input_sub_remover.update_progress(tbar, increment=1)
+                            if input_sub_remover.gui_mode:
+                                input_sub_remover.update_preview_with_comp(frames_hr[j], frames_hr[j])
                 # 如果有要修复的区域
                 if inpaint_area and valid_frames_count > 0:
                     # 创建一个映射，记录哪些帧被处理了以及它们在frames[k]中的索引
@@ -327,8 +358,12 @@ class STTNAutoInpaint:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
         except Exception as e:
-            print(f"Error during video processing: {str(e)}")
-            # 不抛出异常，允许程序继续执行
+            import traceback
+            traceback.print_exc()
+            diag_log_exc(f"[STTNAutoInpaint] Error during video processing: {str(e)}")
+            print(f"[STTNAutoInpaint] Error during video processing: {str(e)}")
+            # 重新抛出异常让上层感知, 避免出现 "处理成功但输出全黑" 的静默失败
+            raise
         finally:
             if reader:
                 prefetcher.release()

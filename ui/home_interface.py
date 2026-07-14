@@ -30,6 +30,7 @@ class HomeInterface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("HomeInterface")
+        self.setAcceptDrops(True)
         # 初始化一些变量
         self.video_path = None
         self.video_cap = None
@@ -634,6 +635,41 @@ class HomeInterface(QWidget):
         return True
 
 
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        files = []
+        for url in urls:
+            if url.isLocalFile():
+                file_path = url.toLocalFile()
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in ['.mp4', '.flv', '.wmv', '.avi', '.mkv', '.mov', '.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff']:
+                    files.append(file_path)
+        
+        if files:
+            self._add_files(files)
+
+    def _add_files(self, files):
+        files_loaded = []
+        # 倒序打开, 确保第一个视频截图显示在屏幕上
+        for path in reversed(files):
+            if self.load_video(path):
+                self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoSuccess']}: {path}")
+                files_loaded.append(path)
+            else:
+                self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoFailed']}: {path}")
+        # 正序添加, 确保任务列表顺序一致
+        for path in reversed(files_loaded):
+            # 添加到任务列表
+            self.task_list_component.add_task(path)
+            index = max(0, self.task_list_component.find_task_index_by_path(path))
+            self.task_list_component.select_task(index)
+
     def open_file(self):
         files, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
@@ -642,20 +678,7 @@ class HomeInterface(QWidget):
             "All Files (*.*);;Video Files (*.mp4 *.flv *.wmv *.avi *.mkv *.mov);;Image Files (*.jpg *.jpeg *.png *.bmp *.webp *.tiff)"
         )
         if files:
-            files_loaded = []
-            # 倒序打开, 确保第一个视频截图显示在屏幕上
-            for path in reversed(files):
-                if self.load_video(path):
-                    self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoSuccess']}: {path}")
-                    files_loaded.append(path)
-                else:
-                    self.append_output(f"{tr['SubtitleExtractorGUI']['OpenVideoFailed']}: {path}")
-            # 正序添加, 确保任务列表顺序一致
-            for path in reversed(files_loaded):
-                # 添加到任务列表
-                self.task_list_component.add_task(path)
-                index = max(0, self.task_list_component.find_task_index_by_path(path))
-                self.task_list_component.select_task(index)
+            self._add_files(files)
 
     def closeEvent(self, event):
         """窗口关闭时断开信号连接并清理资源"""

@@ -35,6 +35,12 @@ available on the computer, depending on the specified command-line options.
 
 import logging
 import subprocess
+
+try:
+    from backend.tools.subprocess_utils import SUBPROCESS_FLAGS
+except ImportError:
+    import sys as _sys
+    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if _sys.platform == 'win32' else 0
 import math
 import time
 from typing import Iterable, Optional, Tuple
@@ -76,7 +82,7 @@ def is_mkvmerge_available() -> bool:
     """
     ret_val = None
     try:
-        ret_val = subprocess.call(['mkvmerge', '--quiet'])
+        ret_val = subprocess.call(['mkvmerge', '--quiet'], creationflags=SUBPROCESS_FLAGS)
     except OSError:
         return False
     if ret_val is not None and ret_val != 2:

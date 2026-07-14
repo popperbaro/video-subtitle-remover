@@ -24,6 +24,12 @@ import platform
 import re
 import string
 import subprocess
+
+try:
+    from backend.tools.subprocess_utils import SUBPROCESS_FLAGS
+except ImportError:
+    import sys as _sys
+    SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if _sys.platform == 'win32' else 0
 import sys
 from typing import AnyStr, Dict, List, Optional, Union
 
@@ -228,7 +234,7 @@ def invoke_command(args: List[str]) -> int:
         CommandTooLong: `args` exceeds built in command line length limit on Windows.
     """
     try:
-        return subprocess.call(args)
+        return subprocess.call(args, creationflags=SUBPROCESS_FLAGS)
     except OSError as err:
         if os.name != 'nt':
             raise
@@ -246,7 +252,7 @@ def get_ffmpeg_path() -> Optional[str]:
     one is available from the `imageio_ffmpeg` package. Returns None if ffmpeg couldn't be found.
     """
     try:
-        subprocess.call(['ffmpeg', '-v', 'quiet'])
+        subprocess.call(['ffmpeg', '-v', 'quiet'], creationflags=SUBPROCESS_FLAGS)
         return 'ffmpeg'
     except OSError:
         pass
@@ -255,7 +261,7 @@ def get_ffmpeg_path() -> Optional[str]:
         # pylint: disable=import-outside-toplevel
         from imageio_ffmpeg import get_ffmpeg_exe
         # pylint: enable=import-outside-toplevel
-        subprocess.call([get_ffmpeg_exe(), '-v', 'quiet'])
+        subprocess.call([get_ffmpeg_exe(), '-v', 'quiet'], creationflags=SUBPROCESS_FLAGS)
         return get_ffmpeg_exe()
     # Gracefully handle case where imageio_ffmpeg is not available.
     except ModuleNotFoundError:
@@ -275,7 +281,7 @@ def get_ffmpeg_version() -> Optional[str]:
     if ffmpeg_path is None:
         return None
     # If get_ffmpeg_path() returns a value, the path it returns should be invocable.
-    output = subprocess.check_output(args=[ffmpeg_path, '-version'], text=True)
+    output = subprocess.check_output(args=[ffmpeg_path, '-version'], text=True, creationflags=SUBPROCESS_FLAGS)
     output_split = output.split()
     if len(output_split) >= 3 and output_split[1] == 'version':
         return output_split[2]
@@ -287,7 +293,7 @@ def get_mkvmerge_version() -> Optional[str]:
     """Get mkvmerge version identifier, or None if mkvmerge is not found in PATH."""
     tool_name = 'mkvmerge'
     try:
-        output = subprocess.check_output(args=[tool_name, '--version'], text=True)
+        output = subprocess.check_output(args=[tool_name, '--version'], text=True, creationflags=SUBPROCESS_FLAGS)
     except FileNotFoundError:
         return None
     output_split = output.split()
